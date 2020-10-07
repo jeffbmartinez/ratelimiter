@@ -1,53 +1,36 @@
-package main
+package ratelimiter
 
 import (
-	"fmt"
-	"net/http"
-	"time"
-
-	"github.com/labstack/echo"
-	"github.com/labstack/echo/middleware"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 )
 
-func main() {
-	e := echo.New()
+type RateLimiterConfig struct {
+	Skipper middleware.Skipper
 
-	// Turns on "debug mode". For development only
-	e.Debug = true
-
-	e.Use(middleware.Logger())
-	e.Use(CustomMiddleware)
-
-	e.GET("/", func(c echo.Context) error {
-		return c.String(http.StatusOK, "Hello, World!\n")
-	})
-
-	a := e.Group("/api")
-	// a.Use(ratelimiter-middleware)
-	a.GET("/users/:id", getUser)
-
-	e.Logger.Fatal(e.Start(":1323"))
+	BucketSize       int
+	TokensPerSecond  int
+	InitialNumTokens int
 }
 
-// e.GET("/api/users/:id", getUser)
-func getUser(c echo.Context) error {
-	id := c.Param("id")
-	apiKey := c.QueryParam("apikey")
-	return c.String(http.StatusOK, fmt.Sprintf("User ID: %v\nAPI Key: %v\n", id, apiKey))
-}
+func RateLimiterWithConfig(config RateLimiterConfig) echo.MiddlewareFunc {
+	if config.Skipper == nil {
+		config.Skipper = middleware.DefaultSkipper
+	}
 
-func CustomMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		delayHeaderValue := c.Request().Header.Get("X-Add-Delay")
-		if delayHeaderValue != "" {
-			delayDuration, err := time.ParseDuration(delayHeaderValue)
+	tokenBucket := NewTokenBucket(config.BucketSize, config.TokensPerSecond, config.InitialNumTokens)
 
-			if err == nil {
-				fmt.Printf("Sleeping for %v\n", delayHeaderValue)
-				time.Sleep(delayDuration)
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if config.Skipper(c) {
+				return next(c)
 			}
-		}
 
-		return next(c)
+			if tokenBucket.RequestToken() {
+				return next(c)
+			}
+
+			return echo.ErrTooManyRequests
+		}
 	}
 }
